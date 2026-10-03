@@ -15,12 +15,14 @@ from sqlalchemy.orm import Session
 
 from app.models.core import Alert, AuditLog
 from app.api.simulation import advance_simulation
-from app.vigil.detectors.margin import MARGIN_QUERY, margin_evidence
+from app.vigil.detectors.margin import MARGIN_QUERY, MarginDetector, margin_evidence
 from app.vigil.service import run_vigil
 
 
 @unittest.skipUnless(os.environ.get("CENTINELA_TEST_POSTGRES") == "1", "Requiere CENTINELA_TEST_POSTGRES=1")
 class OfficialMarginTests(unittest.TestCase):
+    # Aísla S1: InventoryDetector tiene su propia validación en test_inventory_postgres.
+    @patch("app.vigil.service.DETECTORS", (MarginDetector(),))
     def test_official_metrics_detection_idempotence_and_no_future_data(self):
         root = Path(__file__).resolve().parents[1]
         url = make_url(dotenv_values(root / ".env")["DATABASE_URL_UNPOOLED"]).set(drivername="postgresql+psycopg")

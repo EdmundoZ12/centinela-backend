@@ -56,6 +56,76 @@ class MarginInvestigation(StrictModel):
     limitaciones: list[str]
 
 
+class InventorySnapshot(StrictModel):
+    sku: str
+    producto: str | None
+    linea: str | None
+    clase_abc: str | None
+    bodega_id: str
+    existencia: int | None
+    demanda_prom_30d: Decimal | None
+    cobertura_dias: Decimal | None
+    cobertura_minima_dias: Decimal | None
+    unidades_pendientes: Decimal | None
+    origen_pendientes: str = "v_cobertura_inventario al corte de la alerta (evidencia del detector)"
+
+
+class DemandAnalysis(StrictModel):
+    ventana_actual_desde: date
+    ventana_previa_desde: date
+    dias_actuales: int
+    dias_previos: int
+    demanda_actual: Decimal | None
+    demanda_historica: Decimal | None
+    variacion_demanda_pct: Decimal | None
+    entradas_ventana_actual: int
+    salidas_ventana_actual: int
+
+
+class DailyInventory(StrictModel):
+    fecha: date
+    entradas: int
+    salidas: int
+    existencia_final: int
+
+
+class SupplierInfo(StrictModel):
+    proveedor_id: str
+    nombre: str | None
+    lead_time_dias: int | None
+
+
+class PurchaseOrderEvidence(StrictModel):
+    orden_id: str
+    proveedor_id: str
+    proveedor: str | None
+    cantidad: int
+    fecha_orden: date
+    fecha_esperada: date
+    fecha_recibida: date | None
+    estado_al_corte: Literal["RECIBIDA", "RETRASADA", "EN_TRANSITO"]
+    dias_retraso: int | None
+    origen: str = "ordenes_compra; estado derivado de fechas al corte, no del estado final del dataset"
+
+
+class InventoryInvestigation(StrictModel):
+    sku: str
+    bodega_id: str
+    fecha_corte: date
+    inventory: InventorySnapshot
+    demand_analysis: DemandAnalysis
+    serie_reciente: list[DailyInventory]
+    purchase_orders: list[PurchaseOrderEvidence]
+    proveedor_catalogo: SupplierInfo | None
+    aumento_demanda: bool | None
+    ordenes_retrasadas: int
+    unidades_retrasadas: int
+    ordenes_en_transito: int
+    unidades_en_transito: int
+    cobertura_consistente_con_detector: bool
+    limitaciones: list[str]
+
+
 class AnalysisFact(StrictModel):
     statement: str
     source: Literal["DATA", "POLICY"]

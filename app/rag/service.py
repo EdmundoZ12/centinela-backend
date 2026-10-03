@@ -72,3 +72,8 @@ MARGIN_POLICY_QUERY = (
     "Aumento de costos de productos, revisión del precio de venta ante cambios de costo, "
     "margen mínimo por línea y política de inventario y precios."
 )
+
+INVENTORY_POLICY_QUERY = (
+    "Cobertura mínima de inventario por clase ABC, caso crítico con pedidos pendientes de despacho, "
+    "orden de compra retrasada, contacto con el proveedor, proveedor alterno y entrega parcial urgente."
+)

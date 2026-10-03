@@ -14,7 +14,7 @@ from app.db.session import get_db
 from app.main import app
 from app.models.core import Alert, AuditLog, Base, Role, User
 from app.vigil.detectors.margin import MARGIN_QUERY, MarginDetector, margin_evidence
-from app.vigil.service import run_vigil
+from app.vigil.service import DETECTORS, run_vigil
 
 
 class MarginTests(unittest.IsolatedAsyncioTestCase):
@@ -41,6 +41,8 @@ class MarginTests(unittest.IsolatedAsyncioTestCase):
             connection.exec_driver_sql("INSERT INTO app.simulation_state VALUES (1, '2026-08-20')")
             connection.exec_driver_sql("CREATE TABLE centinela.test_sales (fecha DATE, semana DATE, linea TEXT, ventas NUMERIC, costo NUMERIC)")
             connection.exec_driver_sql("CREATE TABLE centinela.ref_margen_minimo_linea (linea TEXT PRIMARY KEY, margen_minimo_pct NUMERIC)")
+            # El Vigía también ejecuta InventoryDetector; sin filas no genera alertas.
+            connection.exec_driver_sql("CREATE TABLE centinela.v_cobertura_inventario (sku TEXT, nombre TEXT, linea TEXT, clase_abc TEXT, bodega_id TEXT, existencia INTEGER, demanda_prom_30d NUMERIC, cobertura_dias NUMERIC, unidades_pendientes NUMERIC)")
             connection.exec_driver_sql("""
                 CREATE VIEW centinela.v_margen_semanal_linea AS
                 SELECT semana, linea, round(100 * (1 - 1.0 * sum(costo) / sum(ventas)), 2) AS margen_pct
@@ -161,7 +163,7 @@ class MarginTests(unittest.IsolatedAsyncioTestCase):
         for role in [Role.GERENTE, Role.ANALISTA]:
             code, body = await self.request(role)
             self.assertEqual(code, 200)
-            self.assertEqual(body["detectores_ejecutados"], 1)
+            self.assertEqual(body["detectores_ejecutados"], len(DETECTORS))
 
     async def test_failure_is_controlled_logged_and_next_detector_runs(self):
         class Broken:

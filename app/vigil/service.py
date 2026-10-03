@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.models.core import AuditLog
 from app.schemas.vigil import VigilSummary
+from app.vigil.detectors.inventory import InventoryDetector
 from app.vigil.detectors.margin import MarginDetector
 
 
@@ -25,7 +26,7 @@ class Detector(Protocol):
     def run(self, db: Session, user_id: UUID | None = None) -> int: ...
 
 
-DETECTORS: tuple[Detector, ...] = (MarginDetector(),)
+DETECTORS: tuple[Detector, ...] = (MarginDetector(), InventoryDetector())
 
 
 def rollback_detector(db: Session) -> None:
