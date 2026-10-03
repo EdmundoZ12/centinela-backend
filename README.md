@@ -206,6 +206,14 @@ Ejemplo:
 
 Las vistas relevantes deben respetar `centinela.fecha_corte()` y no utilizar información futura respecto a la fecha simulada.
 
+Después de confirmar un avance válido, el backend ejecuta automáticamente el Vigía.
+La respuesta conserva `fecha_actual` y `fecha_maxima` y agrega `vigia`, con
+`detectores_ejecutados` y `alertas_nuevas`. Cada detector tiene su propia
+transacción: un fallo no revierte el avance ya confirmado. El resumen agrega
+`errores` con los nombres de detectores fallidos y se registra `DETECTOR_FAILED`
+en bitácora. Si tampoco puede escribirse la bitácora, se emite un log genérico
+sin URL, contraseña ni detalles de la excepción.
+
 ### Regla crítica
 
 Nunca introducir **data leakage**.
@@ -244,6 +252,63 @@ Vigía
 ├── discount_detector
 └── inactivity_detector
 ```
+
+La **fuente de verdad funcional es [resources/metricas.yaml](resources/metricas.yaml)**,
+el archivo oficial de la hackatón. Todo detector actual o futuro debe consultar
+su definición, vista, dimensiones y `umbral_alerta` antes de implementarse:
+
+| Familia | Métrica oficial | Vista principal |
+|---|---|---|
+| Margen | `margen_pct` | `centinela.v_margen_semanal_linea` |
+| Cartera | `saldo_vencido` | `centinela.v_cartera_cliente` |
+| Días de pago | `dias_pago_prom` | `centinela.v_dias_pago_mensual` |
+| Cobertura de inventario | `cobertura_dias` | `centinela.v_cobertura_inventario` |
+| Descuentos | `descuento_en_exceso` | `centinela.v_descuentos_fuera_politica` |
+| Actividad de cliente | `veces_intervalo_habitual` | `centinela.v_actividad_cliente` |
+
+No introducir umbrales propios ni reemplazar estas reglas con criterios del LLM.
+Los umbrales del YAML están expresados en lenguaje natural: el archivo es la
+referencia funcional revisada, no una configuración ejecutable de SQL.
+
+Actualmente solo está registrado `MarginDetector` en `app/vigil/service.py`.
+Los siguientes detectores podrán incorporarse al registro implementando
+`name` y `run(db, user_id)`, sin modificar la integración con el reloj ni los
+endpoints.
+
+### Detector de margen
+
+La regla de `margen_pct` usa dimensiones `semana` y `linea`. Para la semana
+que contiene `centinela.fecha_corte()` (lunes a domingo), calcula el promedio
+simple de los márgenes de las últimas ocho semanas anteriores disponibles de
+cada línea. La semana actual nunca participa del promedio histórico.
+
+```text
+caida_pp = margen_promedio_8_semanas_pct - margen_actual_pct
+alerta = caida_pp > 3 OR margen_actual_pct < margen_minimo_pct
+```
+
+El mínimo procede de `centinela.ref_margen_minimo_linea`. Los porcentajes se
+leen de la vista semántica, que ya expresa la fórmula oficial multiplicada por
+100. La semana actual puede estar incompleta; sus ventas se limitan a la fecha
+de corte mediante `v_ventas`. El detector mantiene un bloqueo compartido del
+reloj mientras consulta y guarda resultados para evitar cambios de corte a
+mitad de una ejecución. No usa líneas, SKU, proveedores ni IDs hardcodeados.
+
+Si hay menos de ocho semanas con margen disponible, usa esas semanas. Si no
+hay historia, el promedio y la caída son `null` y solo se evalúa el mínimo
+disponible. Si falta el mínimo, solo se evalúa la caída. Si falta el margen
+actual, no se genera alerta. No se inventan valores ni se imputan ceros.
+
+Una detección crea una alerta `MARGIN_ANOMALY`, área `COMERCIAL`, estado `NEW`,
+severidad `HIGH` y fecha simulada igual al corte. Guarda línea, semana, márgenes,
+caída y disparadores en `evidence`; `confidence`, `amount_at_risk`, `root_cause`
+y `proposals` permanecen SQL NULL. No hay análisis causal ni acciones propuestas.
+
+`dedupe_key` identifica la tupla tipo/línea/semana, con índice UNIQUE y
+`INSERT ... ON CONFLICT DO NOTHING`. La alerta y `ALERT_DETECTED` se guardan
+juntos. Reejecutar en la misma semana no duplica ni modifica la alerta ni su
+evento, aunque cambie el margen conforme avance el reloj. Una semana nueva
+puede generar otra alerta.
 
 ### Analista
 
@@ -589,7 +654,22 @@ AUDITOR
 ✓ trazabilidad
 ```
 
-La matriz exacta se implementará cuando se construya autorización.
+La autorización básica usa temporalmente el header `X-User-Id`, con el UUID de
+un usuario activo de `app.users`. `GET /users/demo` permite obtener los UUID demo.
+Alertas, decisiones, bitácora y ejecución manual del Vigía requieren ese header; los endpoints de health,
+simulación y selección de usuarios demo mantienen su comportamiento anterior.
+
+| Rol | Consultar alertas y evidencias | Decidir | Consultar bitácora |
+|---|---|---|---|
+| GERENTE | Todas | Todas | Todos los eventos |
+| LIDER_PROCESO | Su área | Su área | Eventos de alertas de su área |
+| ANALISTA | Todas | No | Eventos asociados a alertas consultables |
+| AUDITOR | Todas | No | Todos los eventos |
+
+Un líder sin área no tiene acceso a alertas. Solo gerente y auditor ven eventos
+sin alerta asociada. Un header ausente, inválido o de usuario inexistente devuelve
+401; un usuario inactivo o un acceso fuera de permisos devuelve 403. Esto es
+identificación temporal para la demo, no autenticación empresarial.
 
 ---
 
@@ -641,22 +721,52 @@ GET /health/database
 
 GET /simulacion
 POST /simulacion/avanzar?dias=1
+
+GET /users/demo
+GET /alertas
+GET /alertas/{id}
+POST /alertas/{id}/decision
+GET /bitacora
+POST /vigia/ejecutar
 ```
 
 ### Planeados
 
 ```http
-GET /alertas
-GET /alertas/{id}
-
-POST /alertas/{id}/decision
-
 POST /chat
-
-GET /bitacora
 ```
 
 Más adelante se podrá utilizar SSE para mostrar el progreso del análisis de agentes en tiempo real.
+
+### Decisiones y bitácora
+
+`POST /alertas/{id}/decision` requiere `X-User-Id` y acepta:
+
+```json
+{"decision": "APPROVED", "reason": "Opcional", "edited_proposal": null}
+```
+
+Solo se admite el estado `PROPOSED`. `APPROVED` y `REJECTED` cambian el estado al
+valor correspondiente. `EDITED` exige un objeto o una lista JSON no vacía en
+`edited_proposal`, reemplaza íntegramente `alert.proposals` y conserva `PROPOSED`.
+La propuesta editada requiere una aprobación o rechazo posterior; editar no
+autoriza ninguna ejecución. Una edición idéntica a la propuesta actual devuelve
+409. No se admite `edited_proposal` para aprobar o rechazar (422).
+
+Cada decisión bloquea la alerta con `SELECT ... FOR UPDATE`, valida su estado y
+guarda el cambio, una fila en `app.decisions` y un evento en `app.audit_log` en la
+misma transacción. Un fallo revierte todo. Una segunda aprobación o rechazo
+sobre una alerta ya decidida devuelve 409 sin nuevos registros. Se permiten
+ediciones sucesivas diferentes mientras la alerta siga en `PROPOSED`.
+
+La respuesta incluye `decision` (UUID, alerta, usuario, motivo, propuesta editada
+y fecha) y `alert_status`. Los eventos se llaman `ALERT_DECISION_APPROVED`,
+`ALERT_DECISION_REJECTED` y `ALERT_DECISION_EDITED`; sus payloads incluyen el UUID
+de decisión, los estados anterior y nuevo y el motivo. Las ediciones conservan
+en el evento las propuestas anterior y nueva.
+
+`GET /bitacora` admite los filtros opcionales `alert_id` (UUID) y `event_type`.
+Los filtros se combinan y mantienen las restricciones de rol y área.
 
 ---
 
@@ -681,24 +791,25 @@ Completado:
 ✅ GET /simulacion
 ✅ POST /simulacion/avanzar
 ✅ capa semántica adaptada al corte temporal
+✅ usuarios demo, roles y áreas persistidos
+✅ tablas y modelos de alertas, decisiones y bitácora
+✅ endpoints de lectura de usuarios demo, alertas y bitácora
+✅ identificación temporal por X-User-Id y autorización básica por rol/área
+✅ endpoint de decisión con bitácora automática y transacción
+✅ margin_detector según resources/metricas.yaml, con deduplicación persistente
+✅ Vigía automático tras avanzar el reloj y endpoint manual autorizado
 ```
 
 Pendiente:
 
 ```text
-⬜ roles y áreas
-⬜ núcleo de alertas
-⬜ decisiones
-⬜ bitácora
-⬜ Vigía
-⬜ margin_detector
-⬜ Analista
-⬜ RAG
+✅ Analista de margen con investigación determinística y bitácora
+✅ RAG de políticas con pgvector y referencias documentales
 ⬜ Estratega
 ⬜ Ejecutor
 ⬜ LangGraph
 ⬜ MCP
-⬜ OpenAI
+✅ OpenAI Responses API y embeddings configurables
 ⬜ otros 4 detectores
 ⬜ seguridad / prompt injection
 ⬜ Langfuse
@@ -786,7 +897,12 @@ centinela-backend/
 │   ├── api/
 │   ├── core/
 │   ├── db/
+│   ├── models/
 │   ├── schemas/
+│   ├── vigil/
+│   │   ├── service.py
+│   │   └── detectors/
+│   │       └── margin.py
 │   └── main.py
 │
 ├── database/
@@ -798,9 +914,13 @@ centinela-backend/
 │       ├── 01_esquema.sql
 │       ├── 02_carga.sql
 │       ├── 03_capa_semantica.sql
-│       └── 04_reloj_simulado.sql
+│       ├── 04_reloj_simulado.sql
+│       ├── 05_core_app.sql
+│       └── 06_margin_detector.sql
 │
 ├── policies/
+├── resources/
+│   └── metricas.yaml             # fuente de verdad funcional oficial
 ├── .env.example
 ├── .gitignore
 ├── .dockerignore
@@ -825,12 +945,11 @@ DEBUG=true
 DATABASE_URL=postgresql://...
 DATABASE_URL_UNPOOLED=postgresql://...
 
-# Se habilitarán cuando integremos IA.
+# Configuración de IA.
 OPENAI_API_KEY=
 OPENAI_MODEL_REASONING=
 OPENAI_EMBEDDING_MODEL=
 OPENAI_MODEL_FAST=
-OPENAI_EMBEDDING_MODEL=
 
 # Se habilitarán posteriormente.
 LANGFUSE_PUBLIC_KEY=
@@ -923,7 +1042,79 @@ verificar tablas/vistas
 
 El reloj simulado se aplica posteriormente mediante su script específico.
 
+El core de aplicación se aplica por separado, sin recargar CSV ni cambiar `centinela.*`:
+
+```powershell
+python database\scripts\apply_core_app.py
+```
+
+Este script usa `DATABASE_URL_UNPOOLED`, ejecuta únicamente `05_core_app.sql` en una
+transacción y puede reaplicarse sin duplicar los siete usuarios demo. Los emails
+`@centinela.demo` identifican esos usuarios; se usa `X-User-Id` para la autorización
+básica sin autenticación empresarial. `GET /alertas` y `GET /bitacora` devuelven listas persistidas, inicialmente
+vacías. Un UUID de alerta inexistente devuelve 404 y un UUID inválido devuelve 422.
+
+Pruebas locales de API (fixtures transaccionales en memoria y sesiones simuladas):
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Las pruebas de decisiones también pueden usar PostgreSQL. Cada prueba aplica
+el core y crea sus fixtures dentro de una transacción exterior que siempre hace
+rollback, incluso si el endpoint confirma su transacción mediante un savepoint.
+No deja alertas, usuarios ni eventos ficticios permanentes:
+
+```powershell
+$env:CENTINELA_TEST_POSTGRES = "1"
+try {
+    python -m unittest discover -s tests -p test_decisions.py -v
+} finally {
+    Remove-Item Env:\CENTINELA_TEST_POSTGRES
+}
+```
+
+Ejemplo de consulta local con un gerente demo:
+
+```powershell
+$centinelaUsers = Invoke-RestMethod http://127.0.0.1:8000/users/demo
+$centinelaManager = $centinelaUsers | Where-Object role -EQ GERENTE
+$centinelaHeaders = @{ "X-User-Id" = $centinelaManager.id }
+Invoke-RestMethod http://127.0.0.1:8000/alertas -Headers $centinelaHeaders
+Invoke-RestMethod http://127.0.0.1:8000/bitacora -Headers $centinelaHeaders
+```
+
 No ejecutar la inicialización destructivamente sobre una base con información que deba conservarse.
+
+Antes de ejecutar el Vigía, aplica la deduplicación después del reloj y del core:
+
+```powershell
+python database\scripts\apply_margin_detector.py
+```
+
+Este script usa `DATABASE_URL_UNPOOLED`, ejecuta únicamente
+`06_margin_detector.sql` en una transacción y no carga CSV ni ejecuta detectores.
+`POST /vigia/ejecutar` acepta solamente usuarios activos `GERENTE` o `ANALISTA`:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/vigia/ejecutar -Method Post -Headers $centinelaHeaders
+```
+
+Respuesta sin errores: `{"detectores_ejecutados":1,"alertas_nuevas":0}`.
+Los errores controlados se incluyen en `errores` sin detalles sensibles.
+
+Las pruebas de margen locales usan fixtures en memoria. La validación adicional
+contra el dataset oficial de Neon comprueba métricas, corte, creación de alertas,
+bitácora e idempotencia en una transacción que siempre se revierte:
+
+```powershell
+$env:CENTINELA_TEST_POSTGRES = "1"
+try {
+    python -m unittest discover -s tests -p test_margin_postgres.py -v
+} finally {
+    Remove-Item Env:\CENTINELA_TEST_POSTGRES
+}
+```
 
 ---
 
@@ -1018,16 +1209,13 @@ Demo reproducible > infraestructura sofisticada
 El siguiente bloque de desarrollo es:
 
 ```text
-Roles y áreas
-      ↓
-Núcleo de alertas
-      ↓
-Decisiones
-      ↓
-Bitácora
-      ↓
-Primer detector: margen
+Continuar el primer flujo de margen con las siguientes fases autorizadas
 ```
+
+La persistencia del core, sus endpoints de lectura, la autorización básica y
+las decisiones con bitácora automática y el detector determinístico de margen
+ya están implementados. Los demás detectores deben tomar `resources/metricas.yaml`
+como referencia funcional.
 
 No iniciar todavía los demás detectores hasta que el primer vertical slice funcione de extremo a extremo.
 
@@ -1038,7 +1226,7 @@ No iniciar todavía los demás detectores hasta que el primer vertical slice fun
 POST /alertas/{id}/analizar usa X-User-Id de un usuario activo GERENTE o ANALISTA.
 Solo acepta MARGIN_ANOMALY NEW. Los errores de acceso usan 401/403, las alertas
 inexistentes 404, el tipo incorrecto 400, estado incompatible 409 y evidencia
-inválida 422. Los modelos actuales son User, Alert y AuditLog.
+inválida 422. Los modelos actuales son User, Alert, Decision y AuditLog.
 
 Si estas tablas app aún no existen, el script anterior
 `python database/scripts/apply_analyst_prerequisites.py` aplica únicamente su
@@ -1105,9 +1293,9 @@ etapa y mensaje genérico, conservando la evidencia disponible. No se registran
 prompts completos, embeddings ni secretos. Una segunda petición se rechaza con
 409. El endpoint conserva X-User-Id y admite exclusivamente GERENTE y ANALISTA.
 
-En este checkout faltan resources/metricas.yaml y app/vigil, por lo que no pudo
-verificarse el MarginDetector. No se recrearon ni inventaron esos archivos.
-Cuando estén disponibles, **resources/metricas.yaml es la referencia funcional**
+El merge conserva resources/metricas.yaml, app/vigil, app/analyst y app/rag.
+MarginDetector y el Analista comparten las alertas y la bitácora persistidas.
+**resources/metricas.yaml es la referencia funcional**
 para los futuros detectores de margen, cartera, días de pago, cobertura de
 inventario, descuentos y actividad de cliente. Este bloque no cambia umbrales.
 

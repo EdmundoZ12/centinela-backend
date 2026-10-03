@@ -1,12 +1,13 @@
 import json
 import unittest
 from datetime import date
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from sqlalchemy.exc import OperationalError
 
 from app.db.session import get_db
 from app.main import app
+from app.schemas.vigil import VigilSummary
 
 
 class SimulationTests(unittest.IsolatedAsyncioTestCase):
@@ -17,9 +18,12 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
             yield self.db
 
         app.dependency_overrides[get_db] = session
+        self.vigil_patch = patch("app.api.simulation.run_vigil", return_value=VigilSummary(detectores_ejecutados=1))
+        self.vigil = self.vigil_patch.start()
 
     def tearDown(self):
         app.dependency_overrides.pop(get_db, None)
+        self.vigil_patch.stop()
 
     async def request(self, method="GET", query=""):
         messages = []
@@ -96,6 +100,29 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(code, 503)
         self.assertNotIn("secret", json.dumps(body))
         self.db.rollback.assert_called_once()
+
+    async def test_clock_commits_before_vigil_runs(self):
+        self.db.execute.return_value.scalar_one_or_none.return_value = date(2026, 7, 1)
+
+        def execute(db):
+            db.commit.assert_called_once()
+            return VigilSummary(detectores_ejecutados=1, alertas_nuevas=2)
+
+        self.vigil.side_effect = execute
+        code, body = await self.request("POST")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["vigia"], {"detectores_ejecutados": 1, "alertas_nuevas": 2})
+        self.vigil.assert_called_once_with(self.db)
+
+    async def test_controlled_detector_failure_keeps_successful_clock_response(self):
+        self.db.execute.return_value.scalar_one_or_none.return_value = date(2026, 7, 1)
+        self.vigil.return_value = VigilSummary(detectores_ejecutados=1, errores=["margin_detector"])
+        code, body = await self.request("POST")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["fecha_actual"], "2026-07-01")
+        self.assertEqual(body["vigia"]["errores"], ["margin_detector"])
+        self.db.commit.assert_called_once()
+        self.db.rollback.assert_not_called()
 
 
 if __name__ == "__main__":

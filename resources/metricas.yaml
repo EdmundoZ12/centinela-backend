@@ -1,0 +1,31 @@
+# Centinela · definición única de las métricas (capa semántica)
+# Los agentes consultan estas métricas a través de las vistas SQL; nunca recalculan con el modelo de lenguaje.
+moneda: COP
+fecha_corte: "máximo de inventario_diario.fecha (o el día del reloj simulado)"
+metricas:
+  margen_pct:
+    descripcion: Margen bruto sobre ventas netas
+    formula: 1 - sum(costo_total) / sum(valor_neto)
+    vista: v_margen_semanal_linea
+    dimensiones: [semana, linea]
+    umbral_alerta: "caída > 3 puntos vs. promedio de las 8 semanas previas, o margen bajo ref_margen_minimo_linea"
+  saldo_vencido:
+    descripcion: Valor de facturas abiertas con fecha de vencimiento anterior al corte
+    vista: v_cartera_cliente
+    umbral_alerta: "max_dias_vencido > 15 (política de crédito) o saldo_abierto > cupo_credito"
+  dias_pago_prom:
+    descripcion: Días promedio entre factura y pago, por mes de factura
+    vista: v_dias_pago_mensual
+    umbral_alerta: "aumento > 50% frente al promedio histórico del cliente"
+  cobertura_dias:
+    descripcion: Existencia / demanda promedio diaria de los últimos 30 días
+    vista: v_cobertura_inventario
+    umbral_alerta: "< 10 días en clase A (política de inventario); crítico < 5 días con pedidos pendientes"
+  descuento_en_exceso:
+    descripcion: Descuento otorgado por encima del tope del segmento sin aprobación especial
+    vista: v_descuentos_fuera_politica
+    umbral_alerta: "cualquier línea; agrupar por vendedor y semana"
+  veces_intervalo_habitual:
+    descripcion: Días sin comprar / intervalo habitual entre pedidos del cliente
+    vista: v_actividad_cliente
+    umbral_alerta: "> 3 veces el intervalo habitual en clientes con 10 o más pedidos"
