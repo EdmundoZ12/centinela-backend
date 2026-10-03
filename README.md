@@ -589,7 +589,22 @@ AUDITOR
 ✓ trazabilidad
 ```
 
-La matriz exacta se implementará cuando se construya autorización.
+La autorización básica usa temporalmente el header `X-User-Id`, con el UUID de
+un usuario activo de `app.users`. `GET /users/demo` permite obtener los UUID demo.
+Alertas, decisiones y bitácora requieren ese header; los endpoints de health,
+simulación y selección de usuarios demo mantienen su comportamiento anterior.
+
+| Rol | Consultar alertas y evidencias | Decidir | Consultar bitácora |
+|---|---|---|---|
+| GERENTE | Todas | Todas | Todos los eventos |
+| LIDER_PROCESO | Su área | Su área | Eventos de alertas de su área |
+| ANALISTA | Todas | No | Eventos asociados a alertas consultables |
+| AUDITOR | Todas | No | Todos los eventos |
+
+Un líder sin área no tiene acceso a alertas. Solo gerente y auditor ven eventos
+sin alerta asociada. Un header ausente, inválido o de usuario inexistente devuelve
+401; un usuario inactivo o un acceso fuera de permisos devuelve 403. Esto es
+identificación temporal para la demo, no autenticación empresarial.
 
 ---
 
@@ -641,22 +656,51 @@ GET /health/database
 
 GET /simulacion
 POST /simulacion/avanzar?dias=1
+
+GET /users/demo
+GET /alertas
+GET /alertas/{id}
+POST /alertas/{id}/decision
+GET /bitacora
 ```
 
 ### Planeados
 
 ```http
-GET /alertas
-GET /alertas/{id}
-
-POST /alertas/{id}/decision
-
 POST /chat
-
-GET /bitacora
 ```
 
 Más adelante se podrá utilizar SSE para mostrar el progreso del análisis de agentes en tiempo real.
+
+### Decisiones y bitácora
+
+`POST /alertas/{id}/decision` requiere `X-User-Id` y acepta:
+
+```json
+{"decision": "APPROVED", "reason": "Opcional", "edited_proposal": null}
+```
+
+Solo se admite el estado `PROPOSED`. `APPROVED` y `REJECTED` cambian el estado al
+valor correspondiente. `EDITED` exige un objeto o una lista JSON no vacía en
+`edited_proposal`, reemplaza íntegramente `alert.proposals` y conserva `PROPOSED`.
+La propuesta editada requiere una aprobación o rechazo posterior; editar no
+autoriza ninguna ejecución. Una edición idéntica a la propuesta actual devuelve
+409. No se admite `edited_proposal` para aprobar o rechazar (422).
+
+Cada decisión bloquea la alerta con `SELECT ... FOR UPDATE`, valida su estado y
+guarda el cambio, una fila en `app.decisions` y un evento en `app.audit_log` en la
+misma transacción. Un fallo revierte todo. Una segunda aprobación o rechazo
+sobre una alerta ya decidida devuelve 409 sin nuevos registros. Se permiten
+ediciones sucesivas diferentes mientras la alerta siga en `PROPOSED`.
+
+La respuesta incluye `decision` (UUID, alerta, usuario, motivo, propuesta editada
+y fecha) y `alert_status`. Los eventos se llaman `ALERT_DECISION_APPROVED`,
+`ALERT_DECISION_REJECTED` y `ALERT_DECISION_EDITED`; sus payloads incluyen el UUID
+de decisión, los estados anterior y nuevo y el motivo. Las ediciones conservan
+en el evento las propuestas anterior y nueva.
+
+`GET /bitacora` admite los filtros opcionales `alert_id` (UUID) y `event_type`.
+Los filtros se combinan y mantienen las restricciones de rol y área.
 
 ---
 
@@ -681,15 +725,16 @@ Completado:
 ✅ GET /simulacion
 ✅ POST /simulacion/avanzar
 ✅ capa semántica adaptada al corte temporal
+✅ usuarios demo, roles y áreas persistidos
+✅ tablas y modelos de alertas, decisiones y bitácora
+✅ endpoints de lectura de usuarios demo, alertas y bitácora
+✅ identificación temporal por X-User-Id y autorización básica por rol/área
+✅ endpoint de decisión con bitácora automática y transacción
 ```
 
 Pendiente:
 
 ```text
-⬜ roles y áreas
-⬜ núcleo de alertas
-⬜ decisiones
-⬜ bitácora
 ⬜ Vigía
 ⬜ margin_detector
 ⬜ Analista
@@ -786,6 +831,7 @@ centinela-backend/
 │   ├── api/
 │   ├── core/
 │   ├── db/
+│   ├── models/
 │   ├── schemas/
 │   └── main.py
 │
@@ -798,7 +844,8 @@ centinela-backend/
 │       ├── 01_esquema.sql
 │       ├── 02_carga.sql
 │       ├── 03_capa_semantica.sql
-│       └── 04_reloj_simulado.sql
+│       ├── 04_reloj_simulado.sql
+│       └── 05_core_app.sql
 │
 ├── policies/
 ├── .env.example
@@ -922,6 +969,48 @@ verificar tablas/vistas
 
 El reloj simulado se aplica posteriormente mediante su script específico.
 
+El core de aplicación se aplica por separado, sin recargar CSV ni cambiar `centinela.*`:
+
+```powershell
+python database\scripts\apply_core_app.py
+```
+
+Este script usa `DATABASE_URL_UNPOOLED`, ejecuta únicamente `05_core_app.sql` en una
+transacción y puede reaplicarse sin duplicar los siete usuarios demo. Los emails
+`@centinela.demo` identifican esos usuarios; se usa `X-User-Id` para la autorización
+básica sin autenticación empresarial. `GET /alertas` y `GET /bitacora` devuelven listas persistidas, inicialmente
+vacías. Un UUID de alerta inexistente devuelve 404 y un UUID inválido devuelve 422.
+
+Pruebas locales de API (fixtures transaccionales en memoria y sesiones simuladas):
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Las pruebas de decisiones también pueden usar PostgreSQL. Cada prueba aplica
+el core y crea sus fixtures dentro de una transacción exterior que siempre hace
+rollback, incluso si el endpoint confirma su transacción mediante un savepoint.
+No deja alertas, usuarios ni eventos ficticios permanentes:
+
+```powershell
+$env:CENTINELA_TEST_POSTGRES = "1"
+try {
+    python -m unittest discover -s tests -p test_decisions.py -v
+} finally {
+    Remove-Item Env:\CENTINELA_TEST_POSTGRES
+}
+```
+
+Ejemplo de consulta local con un gerente demo:
+
+```powershell
+$centinelaUsers = Invoke-RestMethod http://127.0.0.1:8000/users/demo
+$centinelaManager = $centinelaUsers | Where-Object role -EQ GERENTE
+$centinelaHeaders = @{ "X-User-Id" = $centinelaManager.id }
+Invoke-RestMethod http://127.0.0.1:8000/alertas -Headers $centinelaHeaders
+Invoke-RestMethod http://127.0.0.1:8000/bitacora -Headers $centinelaHeaders
+```
+
 No ejecutar la inicialización destructivamente sobre una base con información que deba conservarse.
 
 ---
@@ -1017,15 +1106,10 @@ Demo reproducible > infraestructura sofisticada
 El siguiente bloque de desarrollo es:
 
 ```text
-Roles y áreas
-      ↓
-Núcleo de alertas
-      ↓
-Decisiones
-      ↓
-Bitácora
-      ↓
 Primer detector: margen
 ```
+
+La persistencia del core, sus endpoints de lectura, la autorización básica y
+las decisiones con bitácora automática ya están implementados.
 
 No iniciar todavía los demás detectores hasta que el primer vertical slice funcione de extremo a extremo.
