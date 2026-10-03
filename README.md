@@ -1352,3 +1352,10 @@ Consultar [docs/s1_demo.md](docs/s1_demo.md) para contratos, permisos, recuperac
 idempotencia, aplicación de 08_executor.sql, pruebas y comandos exactos de demo.
 El script scripts/integration_s1_full.py consume OpenAI solo de forma explícita y
 se detiene antes de aprobar o ejecutar; no pertenece a los tests normales.
+
+## 28. S3 completo: Inventario crítico
+
+Detector `InventoryDetector` en el Vigía, Analista de inventario con RAG, Estratega y
+Ejecutor sandbox reutilizando los endpoints de S1. Requiere aplicar
+`database/sql/09_inventory_scenario.sql`. Consultar [docs/s3_demo.md](docs/s3_demo.md)
+para reglas, evidencia, acciones permitidas, limitaciones y comandos.

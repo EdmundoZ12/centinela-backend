@@ -1,6 +1,8 @@
 # Contexto para continuar Centinela
 
-Actualizado: 2026-10-03. Rama: `feature/margin-analyst`.
+Actualizado: 2026-10-03. Rama actual: `feature/s3-inventory` (creada desde `main`
+tras el merge de S1). Las secciones de S1 más abajo describen la rama anterior
+`feature/margin-analyst`, ya mergeada en `main` (PR #1).
 
 ## Preferencias del usuario
 
@@ -10,8 +12,58 @@ Actualizado: 2026-10-03. Rama: `feature/margin-analyst`.
 - No modificar SQL oficiales 01/02/03 ni inventar entidades del escenario.
 - No hacer commit ni push salvo autorización nueva.
 - No mostrar secretos ni leer el .env en salidas de herramientas.
+- Pedir confirmación antes de cambios en la base Neon compartida (migraciones).
+- El usuario instala dependencias del .venv por su cuenta.
 
-## Estado implementado
+## S3 — Inventario crítico (completo y validado, sin commit)
+
+Tarea: TASK_BACKEND_S3_INVENTORY.md (sin trackear, junto con TEAM_SETUP.md).
+Detalle técnico completo en docs/s3_demo.md.
+
+Implementado:
+- app/vigil/detectors/inventory.py: InventoryDetector sobre v_cobertura_inventario,
+  registrado en DETECTORS. CRITICAL = cobertura < 5 y pendientes > 0; HIGH = bajo el
+  mínimo de clase (A 10, B 7, C 5). area INVENTARIO. dedupe_key =
+  [INVENTORY_RISK, sku, bodega, severidad, semana del corte].
+- app/analyst/inventory.py: investigación read-only al corte de la alerta (demanda
+  30 d vs 60 d previos, serie reciente, órdenes de compra con estado derivado de
+  fechas al corte, proveedor de catálogo). No usa la columna estado del dataset.
+- Analista, Estratega y Ejecutor despachan por alert.type con un registro SCENARIOS;
+  S1 conserva reglas, prompts y contratos (analyze_margin_alert es alias).
+- ActionType = unión de MarginActionType + InventoryActionType;
+  ACTIONS_BY_ALERT_TYPE es el allowlist por escenario (también en el Ejecutor).
+- amount_at_risk = NULL para inventario (sin fórmula oficial).
+- database/sql/09_inventory_scenario.sql + database/scripts/apply_inventory_scenario.py:
+  amplían el CHECK execution_actions_action_type_check. **Aplicado en Neon el 2026-10-03**
+  con autorización del usuario; CHECK verificado con las 7 acciones.
+- scripts/integration_s3_full.py (OpenAI real, se detiene antes de decidir).
+- tests/test_inventory.py (23, SQLite + mocks) y tests/test_inventory_postgres.py.
+- Ajustes mínimos a S1: tests/test_margin.py (vista vacía de cobertura y
+  len(DETECTORS)) y tests/test_margin_postgres.py (parchea DETECTORS a MarginDetector).
+
+Hallazgos del dataset (no hardcodear en código):
+- Pedidos "Pendiente de despacho" solo existen del 2026-09-27 al 09-30: el caso
+  crítico solo aparece al final del rango del reloj.
+- Escenario sembrado: demanda sube (ago → sep), una orden queda retrasada sin
+  recepción, cobertura crítica con pedidos pendientes el 09-29/09-30.
+- No hay cantidad recibida por orden y todas las recepciones igualan lo pedido:
+  la "entrega parcial" no es demostrable; el Analista no debe afirmarla.
+- Reloj compartido de Neon estaba en 2026-08-25.
+
+Validación hecha:
+- Suite normal: 103 tests OK (6 PostgreSQL omitidos).
+- test_clock_detects_official_scenario... OK contra Neon (~3,5 min, rollback;
+  bloquea la fila del reloj mientras corre). Reloj y alertas verificados intactos.
+- test_api_flow_new_to_executed_and_cleanup OK contra Neon (~23 s): NEW → EXECUTED,
+  3 acciones sandbox, 409 al repetir, 8 eventos; fixture limpiada y verificada en 0.
+- Suite completa con CENTINELA_TEST_POSTGRES=1: 103 OK, sin omisiones (~6,6 min).
+- git diff --check OK, .env ignorado y no trackeado, escaneo de secretos sin hallazgos.
+  Reloj sigue en 2026-08-25; sin usuarios fixture restantes.
+- Pendiente solo: revisión del usuario, y commit/push/PR cuando lo autorice
+  (sección 46 de la tarea).
+- Para correr un test postgres suelto: PYTHONPATH=tests (importa test_inventory).
+
+## Estado implementado (S1)
 
 S1 — Margen completo en sandbox:
 NEW → Analista → ANALYZING → Estratega → PROPOSED → decisión humana →
@@ -120,7 +172,7 @@ POST ejecutar, GET ejecuciones y GET bitacora?alert_id=UUID.
 
 ## Limitaciones y siguiente sesión
 
-- Solo S1. No implementar otros escenarios sin nueva instrucción.
+- S1 completo; S3 completo y validado, sin commit (ver arriba). No implementar S2/S4/S5 sin nueva instrucción.
 - Sin LangGraph, MCP, ejecución externa o autenticación empresarial.
 - Sin calendario colombiano: no afirmar incumplimiento de días hábiles.
 - Las ediciones genéricas del endpoint existente siguen admitidas, pero la ejecución
