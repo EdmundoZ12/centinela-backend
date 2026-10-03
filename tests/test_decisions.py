@@ -68,6 +68,7 @@ class DecisionTests(unittest.IsolatedAsyncioTestCase):
             root = Path(__file__).resolve().parents[1]
             with self.connection.connection.driver_connection.cursor() as cursor:
                 cursor.execute((root / "database/sql/05_core_app.sql").read_text(encoding="utf-8"))
+                cursor.execute((root / "database/sql/06_margin_detector.sql").read_text(encoding="utf-8"))
         else:
             # SQLite necesita una transacción real antes de los SAVEPOINT.
             self.connection.exec_driver_sql("BEGIN")

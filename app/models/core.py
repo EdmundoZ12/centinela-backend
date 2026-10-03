@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Boolean, Date, DateTime, Enum as SqlEnum, ForeignKey, MetaData, Numeric, Text, func, text
+from sqlalchemy import Boolean, Date, DateTime, Enum as SqlEnum, ForeignKey, Index, MetaData, Numeric, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PgUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -68,9 +68,11 @@ class User(Base):
 
 class Alert(Base):
     __tablename__ = "alerts"
+    __table_args__ = (Index("ux_alerts_dedupe_key", "dedupe_key", unique=True),)
 
     id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
     type: Mapped[str] = mapped_column(Text)
+    dedupe_key: Mapped[str | None] = mapped_column(Text)
     area: Mapped[Area] = mapped_column(enum_column(Area, "alerts_area_check"))
     title: Mapped[str] = mapped_column(Text)
     summary: Mapped[str] = mapped_column(Text)

@@ -206,6 +206,14 @@ Ejemplo:
 
 Las vistas relevantes deben respetar `centinela.fecha_corte()` y no utilizar información futura respecto a la fecha simulada.
 
+Después de confirmar un avance válido, el backend ejecuta automáticamente el Vigía.
+La respuesta conserva `fecha_actual` y `fecha_maxima` y agrega `vigia`, con
+`detectores_ejecutados` y `alertas_nuevas`. Cada detector tiene su propia
+transacción: un fallo no revierte el avance ya confirmado. El resumen agrega
+`errores` con los nombres de detectores fallidos y se registra `DETECTOR_FAILED`
+en bitácora. Si tampoco puede escribirse la bitácora, se emite un log genérico
+sin URL, contraseña ni detalles de la excepción.
+
 ### Regla crítica
 
 Nunca introducir **data leakage**.
@@ -244,6 +252,63 @@ Vigía
 ├── discount_detector
 └── inactivity_detector
 ```
+
+La **fuente de verdad funcional es [resources/metricas.yaml](resources/metricas.yaml)**,
+el archivo oficial de la hackatón. Todo detector actual o futuro debe consultar
+su definición, vista, dimensiones y `umbral_alerta` antes de implementarse:
+
+| Familia | Métrica oficial | Vista principal |
+|---|---|---|
+| Margen | `margen_pct` | `centinela.v_margen_semanal_linea` |
+| Cartera | `saldo_vencido` | `centinela.v_cartera_cliente` |
+| Días de pago | `dias_pago_prom` | `centinela.v_dias_pago_mensual` |
+| Cobertura de inventario | `cobertura_dias` | `centinela.v_cobertura_inventario` |
+| Descuentos | `descuento_en_exceso` | `centinela.v_descuentos_fuera_politica` |
+| Actividad de cliente | `veces_intervalo_habitual` | `centinela.v_actividad_cliente` |
+
+No introducir umbrales propios ni reemplazar estas reglas con criterios del LLM.
+Los umbrales del YAML están expresados en lenguaje natural: el archivo es la
+referencia funcional revisada, no una configuración ejecutable de SQL.
+
+Actualmente solo está registrado `MarginDetector` en `app/vigil/service.py`.
+Los siguientes detectores podrán incorporarse al registro implementando
+`name` y `run(db, user_id)`, sin modificar la integración con el reloj ni los
+endpoints.
+
+### Detector de margen
+
+La regla de `margen_pct` usa dimensiones `semana` y `linea`. Para la semana
+que contiene `centinela.fecha_corte()` (lunes a domingo), calcula el promedio
+simple de los márgenes de las últimas ocho semanas anteriores disponibles de
+cada línea. La semana actual nunca participa del promedio histórico.
+
+```text
+caida_pp = margen_promedio_8_semanas_pct - margen_actual_pct
+alerta = caida_pp > 3 OR margen_actual_pct < margen_minimo_pct
+```
+
+El mínimo procede de `centinela.ref_margen_minimo_linea`. Los porcentajes se
+leen de la vista semántica, que ya expresa la fórmula oficial multiplicada por
+100. La semana actual puede estar incompleta; sus ventas se limitan a la fecha
+de corte mediante `v_ventas`. El detector mantiene un bloqueo compartido del
+reloj mientras consulta y guarda resultados para evitar cambios de corte a
+mitad de una ejecución. No usa líneas, SKU, proveedores ni IDs hardcodeados.
+
+Si hay menos de ocho semanas con margen disponible, usa esas semanas. Si no
+hay historia, el promedio y la caída son `null` y solo se evalúa el mínimo
+disponible. Si falta el mínimo, solo se evalúa la caída. Si falta el margen
+actual, no se genera alerta. No se inventan valores ni se imputan ceros.
+
+Una detección crea una alerta `MARGIN_ANOMALY`, área `COMERCIAL`, estado `NEW`,
+severidad `HIGH` y fecha simulada igual al corte. Guarda línea, semana, márgenes,
+caída y disparadores en `evidence`; `confidence`, `amount_at_risk`, `root_cause`
+y `proposals` permanecen SQL NULL. No hay análisis causal ni acciones propuestas.
+
+`dedupe_key` identifica la tupla tipo/línea/semana, con índice UNIQUE y
+`INSERT ... ON CONFLICT DO NOTHING`. La alerta y `ALERT_DETECTED` se guardan
+juntos. Reejecutar en la misma semana no duplica ni modifica la alerta ni su
+evento, aunque cambie el margen conforme avance el reloj. Una semana nueva
+puede generar otra alerta.
 
 ### Analista
 
@@ -591,7 +656,7 @@ AUDITOR
 
 La autorización básica usa temporalmente el header `X-User-Id`, con el UUID de
 un usuario activo de `app.users`. `GET /users/demo` permite obtener los UUID demo.
-Alertas, decisiones y bitácora requieren ese header; los endpoints de health,
+Alertas, decisiones, bitácora y ejecución manual del Vigía requieren ese header; los endpoints de health,
 simulación y selección de usuarios demo mantienen su comportamiento anterior.
 
 | Rol | Consultar alertas y evidencias | Decidir | Consultar bitácora |
@@ -662,6 +727,7 @@ GET /alertas
 GET /alertas/{id}
 POST /alertas/{id}/decision
 GET /bitacora
+POST /vigia/ejecutar
 ```
 
 ### Planeados
@@ -730,13 +796,13 @@ Completado:
 ✅ endpoints de lectura de usuarios demo, alertas y bitácora
 ✅ identificación temporal por X-User-Id y autorización básica por rol/área
 ✅ endpoint de decisión con bitácora automática y transacción
+✅ margin_detector según resources/metricas.yaml, con deduplicación persistente
+✅ Vigía automático tras avanzar el reloj y endpoint manual autorizado
 ```
 
 Pendiente:
 
 ```text
-⬜ Vigía
-⬜ margin_detector
 ⬜ Analista
 ⬜ RAG
 ⬜ Estratega
@@ -833,6 +899,10 @@ centinela-backend/
 │   ├── db/
 │   ├── models/
 │   ├── schemas/
+│   ├── vigil/
+│   │   ├── service.py
+│   │   └── detectors/
+│   │       └── margin.py
 │   └── main.py
 │
 ├── database/
@@ -845,9 +915,12 @@ centinela-backend/
 │       ├── 02_carga.sql
 │       ├── 03_capa_semantica.sql
 │       ├── 04_reloj_simulado.sql
-│       └── 05_core_app.sql
+│       ├── 05_core_app.sql
+│       └── 06_margin_detector.sql
 │
 ├── policies/
+├── resources/
+│   └── metricas.yaml             # fuente de verdad funcional oficial
 ├── .env.example
 ├── .gitignore
 ├── .dockerignore
@@ -1013,6 +1086,36 @@ Invoke-RestMethod http://127.0.0.1:8000/bitacora -Headers $centinelaHeaders
 
 No ejecutar la inicialización destructivamente sobre una base con información que deba conservarse.
 
+Antes de ejecutar el Vigía, aplica la deduplicación después del reloj y del core:
+
+```powershell
+python database\scripts\apply_margin_detector.py
+```
+
+Este script usa `DATABASE_URL_UNPOOLED`, ejecuta únicamente
+`06_margin_detector.sql` en una transacción y no carga CSV ni ejecuta detectores.
+`POST /vigia/ejecutar` acepta solamente usuarios activos `GERENTE` o `ANALISTA`:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/vigia/ejecutar -Method Post -Headers $centinelaHeaders
+```
+
+Respuesta sin errores: `{"detectores_ejecutados":1,"alertas_nuevas":0}`.
+Los errores controlados se incluyen en `errores` sin detalles sensibles.
+
+Las pruebas de margen locales usan fixtures en memoria. La validación adicional
+contra el dataset oficial de Neon comprueba métricas, corte, creación de alertas,
+bitácora e idempotencia en una transacción que siempre se revierte:
+
+```powershell
+$env:CENTINELA_TEST_POSTGRES = "1"
+try {
+    python -m unittest discover -s tests -p test_margin_postgres.py -v
+} finally {
+    Remove-Item Env:\CENTINELA_TEST_POSTGRES
+}
+```
+
 ---
 
 ## 21. Reglas para contribuir y para agentes de código
@@ -1106,10 +1209,12 @@ Demo reproducible > infraestructura sofisticada
 El siguiente bloque de desarrollo es:
 
 ```text
-Primer detector: margen
+Continuar el primer flujo de margen con las siguientes fases autorizadas
 ```
 
 La persistencia del core, sus endpoints de lectura, la autorización básica y
-las decisiones con bitácora automática ya están implementados.
+las decisiones con bitácora automática y el detector determinístico de margen
+ya están implementados. Los demás detectores deben tomar `resources/metricas.yaml`
+como referencia funcional.
 
 No iniciar todavía los demás detectores hasta que el primer vertical slice funcione de extremo a extremo.

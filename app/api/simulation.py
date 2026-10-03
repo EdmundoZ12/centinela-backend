@@ -7,7 +7,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.schemas.simulation import SimulationResponse
+from app.schemas.simulation import SimulationAdvanceResponse, SimulationResponse
+from app.vigil.service import run_vigil
 
 
 router = APIRouter(prefix="/simulacion", tags=["simulacion"])
@@ -33,10 +34,10 @@ def get_simulation(db: DatabaseSession) -> SimulationResponse:
     return response(current)
 
 
-@router.post("/avanzar", response_model=SimulationResponse)
+@router.post("/avanzar", response_model=SimulationAdvanceResponse)
 def advance_simulation(
     db: DatabaseSession, dias: Annotated[int, Query(gt=0)] = 1,
-) -> SimulationResponse:
+) -> SimulationAdvanceResponse:
     try:
         # UPDATE toma el bloqueo de fila: avances concurrentes no pierden incrementos.
         current = db.execute(text(
@@ -49,4 +50,6 @@ def advance_simulation(
     except SQLAlchemyError:
         db.rollback()
         raise HTTPException(status_code=503, detail="No se pudo avanzar el reloj simulado.") from None
-    return result
+    # El reloj ya está confirmado. Un detector fallido solo revierte su propia transacción.
+    summary = run_vigil(db)
+    return SimulationAdvanceResponse(**result.model_dump(), vigia=summary)
