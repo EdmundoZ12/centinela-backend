@@ -726,6 +726,10 @@ GET /users/demo
 GET /alertas
 GET /alertas/{id}
 POST /alertas/{id}/decision
+POST /alertas/{id}/analizar
+POST /alertas/{id}/estrategia
+POST /alertas/{id}/ejecutar
+GET /alertas/{id}/ejecuciones
 GET /bitacora
 POST /vigia/ejecutar
 ```
@@ -798,18 +802,18 @@ Completado:
 ✅ endpoint de decisión con bitácora automática y transacción
 ✅ margin_detector según resources/metricas.yaml, con deduplicación persistente
 ✅ Vigía automático tras avanzar el reloj y endpoint manual autorizado
+✅ Analista de margen con investigación determinística y bitácora
+✅ RAG de políticas con pgvector y referencias documentales
+✅ Estratega S1 con propuestas sandbox e importe determinístico
+✅ Ejecutor S1 sandbox con aprobación obligatoria e idempotencia
+✅ OpenAI Responses API y embeddings configurables
 ```
 
 Pendiente:
 
 ```text
-✅ Analista de margen con investigación determinística y bitácora
-✅ RAG de políticas con pgvector y referencias documentales
-⬜ Estratega
-⬜ Ejecutor
 ⬜ LangGraph
 ⬜ MCP
-✅ OpenAI Responses API y embeddings configurables
 ⬜ otros 4 detectores
 ⬜ seguridad / prompt injection
 ⬜ Langfuse
@@ -1336,3 +1340,15 @@ OpenAI, en lectura y sin modificar su estado (fuera de la suite normal):
 Para persistir el análisis usar POST /alertas/{id}/analizar y X-User-Id de un
 GERENTE/ANALISTA activo, con alerta MARGIN_ANOMALY NEW. El script de integración
 imprime evidencia, explicación y referencias; no crea alertas de ejemplo.
+
+## 27. S1 completo: Estratega y Ejecutor sandbox
+
+El flujo de margen continúa desde ANALYZING con análisis persistido hasta
+PROPOSED, decisión humana existente y EXECUTED. Estratega solo usa evidencia
+persistida; Python calcula amount_at_risk y el Ejecutor valida APPROVED en código.
+Las acciones son borradores y tareas internas, sin efectos externos.
+
+Consultar [docs/s1_demo.md](docs/s1_demo.md) para contratos, permisos, recuperación,
+idempotencia, aplicación de 08_executor.sql, pruebas y comandos exactos de demo.
+El script scripts/integration_s1_full.py consume OpenAI solo de forma explícita y
+se detiene antes de aprobar o ejecutar; no pertenece a los tests normales.

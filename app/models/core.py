@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Boolean, Date, DateTime, Enum as SqlEnum, ForeignKey, Index, MetaData, Numeric, Text, func, text
+from sqlalchemy import Boolean, Date, DateTime, Enum as SqlEnum, ForeignKey, Index, MetaData, Numeric, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PgUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -110,3 +110,18 @@ class AuditLog(Base):
     event_type: Mapped[str] = mapped_column(Text)
     payload: Mapped[Any] = mapped_column(JSONB(none_as_null=True), nullable=False, server_default=text("'{}'::jsonb"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class ExecutionAction(Base):
+    __tablename__ = "execution_actions"
+    __table_args__ = (UniqueConstraint("alert_id", "proposal_id"),)
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    alert_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("app.alerts.id"))
+    proposal_id: Mapped[str] = mapped_column(Text)
+    action_type: Mapped[str] = mapped_column(Text)
+    payload: Mapped[Any] = mapped_column(JSONB(none_as_null=True), nullable=False)
+    result: Mapped[Any] = mapped_column(JSONB(none_as_null=True), nullable=False)
+    created_by: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("app.users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    dedupe_key: Mapped[str] = mapped_column(Text, unique=True)

@@ -16,7 +16,7 @@ from sqlalchemy.schema import CreateTable
 from app.analyst.margin import investigate_margin, percent_change
 from app.analyst.schemas import AnalysisExplanation, AnalysisFact, PolicyFinding
 from app.rag.service import PolicyReference
-from app.analyst.service import explain_margin
+from app.analyst.service import DEADLINE_LIMITATION, explain_margin
 from app.core.config import settings
 from app.db.session import get_db
 from app.main import app
@@ -289,8 +289,23 @@ class AnalystTests(unittest.TestCase):
             explain_margin(evidence, self.openai, self.policies)
         output.policy_findings[0].page_number = 1
         output.summary = "Se incumplió el plazo de revisión."
-        with self.assertRaises(ValueError):
-            explain_margin(evidence, self.openai, self.policies)
+        result = explain_margin(evidence, self.openai, self.policies)
+        self.assertEqual(result.summary, DEADLINE_LIMITATION)
+
+    def test_deadline_disclaimers_do_not_fail_valid_analysis(self):
+        evidence = investigate_margin(self.db, self.line, self.week, self.cutoff)
+        output = self.openai.responses.parse.return_value.output_parsed
+        for disclaimer in [
+            "No se puede afirmar incumplimiento del plazo sin calendario oficial.",
+            "No se ha demostrado que el plazo esté vencido.",
+            "No se confirma incumplimiento; sin embargo, se incumplió el plazo.",
+        ]:
+            output.interpretation = "El costo aumentó sin ajuste proporcional de precio. " + disclaimer
+            result = explain_margin(evidence, self.openai, self.policies)
+            self.assertIn("El costo aumentó sin ajuste proporcional de precio.", result.interpretation)
+            self.assertIn(DEADLINE_LIMITATION, result.interpretation)
+            self.assertNotIn("incumpl", result.interpretation)
+            self.assertEqual(result.policy_findings[0].statement, self.policies[0].content)
 
     def test_rag_failure_preserves_sql_evidence(self):
         with patch("app.analyst.service.retrieve_policies", side_effect=RuntimeError("secret")), self.assertLogs("app.analyst.service", level="ERROR"):
