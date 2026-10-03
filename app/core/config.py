@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     debug: bool = False
     database_url: SecretStr
+    openai_api_key: SecretStr | None = None
+    openai_model_reasoning: str | None = None
+    openai_embedding_model: str | None = None
 
 
 settings = Settings()

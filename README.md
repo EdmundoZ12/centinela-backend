@@ -521,7 +521,7 @@ policies/
 └── Politica_Inventario_y_Precios.pdf
 ```
 
-Más adelante se indexarán mediante RAG usando pgvector y embeddings de OpenAI.
+Se indexan mediante RAG usando pgvector y embeddings de OpenAI (ver bloque S1).
 
 Las políticas sirven para dos propósitos diferentes:
 
@@ -828,6 +828,7 @@ DATABASE_URL_UNPOOLED=postgresql://...
 # Se habilitarán cuando integremos IA.
 OPENAI_API_KEY=
 OPENAI_MODEL_REASONING=
+OPENAI_EMBEDDING_MODEL=
 OPENAI_MODEL_FAST=
 OPENAI_EMBEDDING_MODEL=
 
@@ -1029,3 +1030,121 @@ Primer detector: margen
 ```
 
 No iniciar todavía los demás detectores hasta que el primer vertical slice funcione de extremo a extremo.
+
+---
+
+## 25. Analista de margen y compatibilidad del checkout
+
+POST /alertas/{id}/analizar usa X-User-Id de un usuario activo GERENTE o ANALISTA.
+Solo acepta MARGIN_ANOMALY NEW. Los errores de acceso usan 401/403, las alertas
+inexistentes 404, el tipo incorrecto 400, estado incompatible 409 y evidencia
+inválida 422. Los modelos actuales son User, Alert y AuditLog.
+
+Si estas tablas app aún no existen, el script anterior
+`python database/scripts/apply_analyst_prerequisites.py` aplica únicamente su
+SQL idempotente, conserva tablas existentes y crea usuarios demo. No genera
+alertas ni carga CSV. En una base con core existente no es necesario ejecutarlo.
+
+Los costos y precios por SKU son promedios ponderados por unidades. La contribución
+descriptiva se calcula como ventas actuales por caída de margen del SKU dividida
+por cien; no descompone el efecto de mezcla entre SKU. La asociación de catálogo
+con proveedores no prueba quién suministró una venta concreta. Las cifras se
+serializan como cadenas decimales exactas y no se calculan con el modelo.
+
+La prueba opcional del dataset oficial y pgvector no usa OpenAI; revierte todos
+los cambios temporales de RAG:
+
+```powershell
+$env:CENTINELA_TEST_POSTGRES = "1"
+try {
+    .\.venv\Scripts\python.exe -m unittest discover -s tests -p '*postgres.py' -v
+} finally {
+    Remove-Item Env:\CENTINELA_TEST_POSTGRES
+}
+```
+
+## 26. Análisis S1 con RAG de políticas
+
+El Analista investiga con SELECT parametrizados en una transacción read-only.
+Obtiene producto, margen mínimo, ventas, costos, precios ponderados, variaciones
+porcentuales y proveedores de catálogo sin IDs ni fechas del escenario hardcodeados.
+Las ventas y vigencias se limitan al corte de la alerta; las semanas históricas
+son anteriores a su semana. Las tablas oficiales permanecen intactas.
+
+`app.rag` extrae texto con pypdf por página, divide en fragmentos de hasta 1200
+caracteres con solapamiento de 180 y guarda procedencia y hashes SHA-256.
+`07_policy_rag.sql` es independiente de `07_analyst_prerequisites.sql`: sus
+nombres completos son distintos. Usa pgvector mediante SQL parametrizado, sin
+necesitar el paquete Python pgvector, sin dimensiones de modelo hardcodeadas
+ni índices aproximados. La recuperación filtra por modelo y dimensión y ordena
+por distancia coseno. Si cambia OPENAI_EMBEDDING_MODEL, volver a indexar.
+
+La indexación usa DATABASE_URL_UNPOOLED, lock por documento y reemplazo
+transaccional. Los documentos idénticos con el mismo modelo no generan embeddings
+ni duplicados. Un error revierte el documento afectado y conserva su versión
+anterior; documentos anteriores ya confirmados se conservan. Los PDFs sin texto
+extraíble fallan con un error controlado; no se implementa OCR.
+
+El contenido recuperado es **UNTRUSTED DATA**. Nunca se inserta como instrucciones:
+se envía como JSON, con instrucciones explícitas de ignorar cambios de rol,
+peticiones de secretos, acciones o SQL. El modelo no tiene herramientas ni acceso
+a la base. Structured Outputs usa Responses API; DATA debe copiar hechos del
+catálogo calculado, POLICY y policy_findings deben citar literalmente fragmentos
+recuperados. El backend valida citas y procedencia. La prosa explicativa no incluye
+cifras nuevas; las citas literales pueden contener cifras del documento.
+No existe calendario colombiano de feriados: no se evalúa ni afirma incumplimiento
+del plazo de días hábiles. Solo se puede citar el requisito documental.
+
+NEW pasa a ANALYZING con ANALYSIS_STARTED. Se conserva primero la investigación,
+luego los fragmentos recuperados, antes de llamar al modelo de razonamiento.
+La finalización **mantiene ANALYZING**, proposals SQL NULL y registra
+ANALYSIS_COMPLETED. root_cause contiene `analysis`, `evidence` y
+`policy_references` (document_name, page_number, chunk_index, content); confidence
+se guarda también en su columna. Los fallos dejan FAILED y ANALYSIS_FAILED con
+etapa y mensaje genérico, conservando la evidencia disponible. No se registran
+prompts completos, embeddings ni secretos. Una segunda petición se rechaza con
+409. El endpoint conserva X-User-Id y admite exclusivamente GERENTE y ANALISTA.
+
+En este checkout faltan resources/metricas.yaml y app/vigil, por lo que no pudo
+verificarse el MarginDetector. No se recrearon ni inventaron esos archivos.
+Cuando estén disponibles, **resources/metricas.yaml es la referencia funcional**
+para los futuros detectores de margen, cartera, días de pago, cobertura de
+inventario, descuentos y actividad de cliente. Este bloque no cambia umbrales.
+
+Configurar el .env existente (sin nombres de modelo predeterminados):
+
+```env
+OPENAI_API_KEY=
+OPENAI_MODEL_REASONING=
+OPENAI_EMBEDDING_MODEL=
+DATABASE_URL_UNPOOLED=
+```
+
+Instalar, aplicar únicamente el nuevo SQL e indexar (la indexación consume API):
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe database/scripts/apply_policy_rag.py
+.\.venv\Scripts\python.exe database/scripts/index_policies.py
+```
+
+No reconstruir el dataset ni volver a cargar CSV. El core app.users/app.alerts/
+app.audit_log y el reloj deben existir previamente. Todas las rutas de scripts
+se resuelven con pathlib.Path desde el proyecto, independientemente del cwd.
+
+Tests normales con mocks de razonamiento y embeddings, sin gastar créditos:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+Integración real opcional sobre una alerta existente, con evidencia SQL, RAG y
+OpenAI, en lectura y sin modificar su estado (fuera de la suite normal):
+
+```powershell
+.\.venv\Scripts\python.exe scripts/integration_margin_openai.py --alert-id UUID_DE_ALERTA_REAL
+```
+
+Para persistir el análisis usar POST /alertas/{id}/analizar y X-User-Id de un
+GERENTE/ANALISTA activo, con alerta MARGIN_ANOMALY NEW. El script de integración
+imprime evidencia, explicación y referencias; no crea alertas de ejemplo.

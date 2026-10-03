@@ -7,10 +7,12 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.simulation import router as simulation_router
+from app.api.analyst import router as analyst_router
 from app.schemas.health import HealthResponse
 
 router = APIRouter()
 router.include_router(simulation_router)
+router.include_router(analyst_router)
 
 
 @router.get("/health", response_model=HealthResponse, tags=["health"])
