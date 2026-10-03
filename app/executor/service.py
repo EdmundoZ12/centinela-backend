@@ -11,7 +11,7 @@ from app.core.permissions import require_alert_access, require_decision_role
 from app.executor.schemas import ExecutionResponse, ExecutionResult
 from app.models.core import Alert, AlertStatus, Area, AuditLog, ExecutionAction
 from app.strategist.schemas import ActionType, Proposal, Strategy
-from app.strategist.service import persisted_investigation
+from app.strategist.service import DISCOUNT_ACTIONS, MARGIN_ACTIONS, persisted_investigation
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +32,21 @@ def sandbox_result(proposal: Proposal, evidence: dict, amount) -> dict:
                 and Decimal(str(s["contribucion_perdida_margen"])) > 0]
         return {"status": "DRAFT_CREATED", "title": proposal.title,
                 "affected_skus": skus, "financial_reference_cop": str(amount) if amount is not None else None}
-    tasks = {ActionType.CREATE_MARGIN_FOLLOWUP_TASK: "MARGIN_FOLLOWUP",
-             ActionType.CREATE_SUPPLIER_REVIEW_TASK: "SUPPLIER_COST_REVIEW"}
-    return {"status": "TASK_CREATED", "task_type": tasks[proposal.action_type], "description": proposal.description}
+    tasks = {
+        ActionType.CREATE_MARGIN_FOLLOWUP_TASK: "MARGIN_FOLLOWUP",
+        ActionType.CREATE_SUPPLIER_REVIEW_TASK: "SUPPLIER_COST_REVIEW",
+        ActionType.CREATE_DISCOUNT_REVIEW_TASK: "DISCOUNT_REVIEW",
+        ActionType.CREATE_SELLER_COACHING_TASK: "SELLER_COACHING",
+        ActionType.CREATE_QUOTING_PERMISSION_REVIEW: "QUOTING_PERMISSION_REVIEW",
+        ActionType.CREATE_COMMERCIAL_MANAGER_REVIEW: "COMMERCIAL_MANAGER_REVIEW",
+    }
+    result = {"status": "TASK_CREATED", "task_type": tasks[proposal.action_type],
+              "description": proposal.description}
+    if "seller" in evidence:
+        result["seller_id"] = evidence["seller"]["vendedor_id"]
+        result["reason"] = proposal.reason
+        result["financial_reference_cop"] = str(amount) if amount is not None else None
+    return result
 
 
 def execute_alert(db, alert_id: UUID, user) -> ExecutionResult:
@@ -45,8 +57,8 @@ def execute_alert(db, alert_id: UUID, user) -> ExecutionResult:
         if alert is None:
             raise HTTPException(404, "Alerta no encontrada.")
         require_alert_access(user, alert)
-        if alert.type != "MARGIN_ANOMALY" or alert.area != Area.COMERCIAL:
-            raise HTTPException(400, "Solo se admite margen comercial.")
+        if alert.type not in ("MARGIN_ANOMALY", "DISCOUNT_POLICY_VIOLATION") or alert.area != Area.COMERCIAL:
+            raise HTTPException(400, "Solo se admiten escenarios comerciales soportados.")
         # Barrera obligatoria de aplicación; no depende de prompts ni del cliente.
         if alert.status != AlertStatus.APPROVED:
             raise HTTPException(409, "Solo se pueden ejecutar alertas APPROVED.")
@@ -55,6 +67,14 @@ def execute_alert(db, alert_id: UUID, user) -> ExecutionResult:
         try:
             proposals = approved_proposals(alert.proposals)
             evidence = persisted_investigation(alert)
+            allowed = DISCOUNT_ACTIONS if alert.type == "DISCOUNT_POLICY_VIOLATION" else MARGIN_ACTIONS
+            if any(proposal.action_type not in allowed for proposal in proposals):
+                raise ValueError("Acción incompatible con el escenario")
+            if alert.type == "DISCOUNT_POLICY_VIOLATION" and not evidence["summary"]["reincidencia"] and any(
+                proposal.action_type == ActionType.CREATE_QUOTING_PERMISSION_REVIEW
+                for proposal in proposals
+            ):
+                raise ValueError("Revisión de autorización sin reincidencia")
         except (ValidationError, ValueError, TypeError, KeyError):
             raise HTTPException(422, "Las propuestas aprobadas o la evidencia no cumplen el contrato sandbox.") from None
         db.add(AuditLog(alert_id=alert_id, user_id=user.id, event_type="EXECUTION_STARTED", payload={"sandbox": True}))

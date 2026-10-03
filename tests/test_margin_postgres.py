@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.models.core import Alert, AuditLog
 from app.api.simulation import advance_simulation
-from app.vigil.detectors.margin import MARGIN_QUERY, margin_evidence
+from app.vigil.detectors.margin import MARGIN_QUERY, MarginDetector, margin_evidence
 from app.vigil.service import run_vigil
 
 
@@ -64,7 +64,7 @@ class OfficialMarginTests(unittest.TestCase):
                         self.assertTrue(candidates, "La fecha de prueba debe producir una anomalía oficial.")
                         before_ids = set(db.scalars(select(Alert.id)).all())
                         before_logs = set(db.scalars(select(AuditLog.id)).all())
-                        result = run_vigil(db)
+                        result = run_vigil(db, detectors=[MarginDetector()])
                         self.assertEqual(result.errores, [])
                         alerts = db.scalars(select(Alert).where(Alert.id.not_in(before_ids))).all()
                         self.assertEqual(result.alertas_nuevas, len(alerts))
@@ -76,11 +76,11 @@ class OfficialMarginTests(unittest.TestCase):
                             self.assertIsNone(alert.root_cause)
                             self.assertIsNone(alert.proposals)
                         self.assertTrue(all(log.event_type == "ALERT_DETECTED" for log in logs))
-                        self.assertEqual(run_vigil(db).alertas_nuevas, 0)
+                        self.assertEqual(run_vigil(db, detectors=[MarginDetector()]).alertas_nuevas, 0)
                         self.assertEqual(set(db.scalars(select(AuditLog.id)).all()), before_logs | {log.id for log in logs})
                         advanced = advance_simulation(db=db, dias=1)
                         self.assertEqual(advanced.fecha_actual, cutoff + timedelta(days=1))
-                        self.assertEqual(advanced.vigia.detectores_ejecutados, 1)
+                        self.assertEqual(advanced.vigia.detectores_ejecutados, 2)
                         self.assertEqual(advanced.vigia.errores, [])
 
                         class Broken:

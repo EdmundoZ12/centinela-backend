@@ -76,3 +76,41 @@ class AnalysisExplanation(StrictModel):
     interpretation: str
     confidence: float = Field(ge=0, le=1)
     insufficient_evidence: bool
+
+
+class DiscountViolation(StrictModel):
+    pedido_id: str
+    linea_n: int
+    cliente_id: str
+    segmento: str
+    sku: str
+    descuento_pct: Decimal
+    tope_normal_pct: Decimal
+    tope_especial_pct: Decimal | None
+    aprobacion_especial: str
+    descuento_en_exceso: Decimal
+    venta_debajo_costo: bool
+
+
+class DiscountSeller(StrictModel):
+    vendedor_id: str
+    nombre: str | None
+    semana: date
+
+
+class DiscountSummary(StrictModel):
+    lineas_fuera_politica: int
+    pedidos_afectados: int
+    clientes_afectados: int
+    descuento_exceso_total: Decimal
+    reincidencia: bool
+    semanas_consecutivas: int
+
+
+class DiscountInvestigation(StrictModel):
+    seller: DiscountSeller
+    fecha_corte: date
+    summary: DiscountSummary
+    violations: list[DiscountViolation]
+    excesos_con_aprobacion_especial: list[DiscountViolation] = Field(default_factory=list)
+    limitaciones: list[str] = Field(default_factory=list)

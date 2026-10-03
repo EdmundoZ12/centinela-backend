@@ -270,8 +270,8 @@ No introducir umbrales propios ni reemplazar estas reglas con criterios del LLM.
 Los umbrales del YAML están expresados en lenguaje natural: el archivo es la
 referencia funcional revisada, no una configuración ejecutable de SQL.
 
-Actualmente solo está registrado `MarginDetector` en `app/vigil/service.py`.
-Los siguientes detectores podrán incorporarse al registro implementando
+Actualmente están registrados `MarginDetector` y `DiscountDetector` en
+`app/vigil/service.py`. Los siguientes detectores podrán incorporarse implementando
 `name` y `run(db, user_id)`, sin modificar la integración con el reloj ni los
 endpoints.
 
@@ -806,6 +806,7 @@ Completado:
 ✅ RAG de políticas con pgvector y referencias documentales
 ✅ Estratega S1 con propuestas sandbox e importe determinístico
 ✅ Ejecutor S1 sandbox con aprobación obligatoria e idempotencia
+🟨 S4 descuentos: implementación lista; validación completa pendiente
 ✅ OpenAI Responses API y embeddings configurables
 ```
 
@@ -814,7 +815,7 @@ Pendiente:
 ```text
 ⬜ LangGraph
 ⬜ MCP
-⬜ otros 4 detectores
+⬜ otros 3 detectores
 ⬜ seguridad / prompt injection
 ⬜ Langfuse
 ⬜ promptfoo
@@ -906,7 +907,8 @@ centinela-backend/
 │   ├── vigil/
 │   │   ├── service.py
 │   │   └── detectors/
-│   │       └── margin.py
+│   │       ├── margin.py
+│   │       └── discount.py
 │   └── main.py
 │
 ├── database/
@@ -920,7 +922,9 @@ centinela-backend/
 │       ├── 03_capa_semantica.sql
 │       ├── 04_reloj_simulado.sql
 │       ├── 05_core_app.sql
-│       └── 06_margin_detector.sql
+│       ├── 06_margin_detector.sql
+│       ├── 08_executor.sql
+│       └── 09_discount_scenario.sql
 │
 ├── policies/
 ├── resources/
@@ -1104,7 +1108,7 @@ Este script usa `DATABASE_URL_UNPOOLED`, ejecuta únicamente
 Invoke-RestMethod http://127.0.0.1:8000/vigia/ejecutar -Method Post -Headers $centinelaHeaders
 ```
 
-Respuesta sin errores: `{"detectores_ejecutados":1,"alertas_nuevas":0}`.
+Respuesta sin errores: `{"detectores_ejecutados":2,"alertas_nuevas":0}`.
 Los errores controlados se incluyen en `errores` sin detalles sensibles.
 
 Las pruebas de margen locales usan fixtures en memoria. La validación adicional

@@ -9,7 +9,7 @@ from sqlalchemy import Date, bindparam
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-import test_decisions as sqlite_support
+from tests import test_decisions as sqlite_support
 from app.db.session import get_db
 from app.main import app
 from app.models.core import Alert, AuditLog, Base, Role, User
@@ -128,18 +128,18 @@ class MarginTests(unittest.IsolatedAsyncioTestCase):
         self.sale(self.week + timedelta(weeks=1), -50)
         row = self.margin_rows()[0]
         self.assertEqual(row["margen_actual_pct"], Decimal("20"))
-        result = run_vigil(self.db)
+        result = run_vigil(self.db, detectors=[MarginDetector()])
         self.assertEqual(result.alertas_nuevas, 1)
         self.assertEqual(self.detected_alerts()[0].simulated_date, self.cutoff)
 
     async def test_persists_real_alert_null_analysis_and_single_audit(self):
         self.fixture()
-        self.assertEqual(run_vigil(self.db).alertas_nuevas, 1)
+        self.assertEqual(run_vigil(self.db, detectors=[MarginDetector()]).alertas_nuevas, 1)
         alert = self.detected_alerts()[0]
         self.assertEqual((alert.area.value, alert.status.value, alert.severity), ("COMERCIAL", "NEW", "HIGH"))
         self.assertTrue(all(value is None for value in [alert.confidence, alert.amount_at_risk, alert.root_cause, alert.proposals]))
         self.assertEqual(alert.evidence["margen_actual_pct"], 20)
-        self.assertEqual(run_vigil(self.db).alertas_nuevas, 0)
+        self.assertEqual(run_vigil(self.db, detectors=[MarginDetector()]).alertas_nuevas, 0)
         self.assertEqual(len(self.detected_alerts()), 1)
         logs = self.db.scalars(select(AuditLog).where(AuditLog.event_type == "ALERT_DETECTED")).all()
         self.assertEqual(len(logs), 1)
@@ -147,21 +147,22 @@ class MarginTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_new_week_has_different_dedupe_key(self):
         self.fixture(current=10, history=[], minimum=15)
-        self.assertEqual(run_vigil(self.db).alertas_nuevas, 1)
+        self.assertEqual(run_vigil(self.db, detectors=[MarginDetector()]).alertas_nuevas, 1)
         type(self).cutoff += timedelta(weeks=1)
         self.sale(self.week + timedelta(weeks=1), 10)
         self.db.commit()
-        self.assertEqual(run_vigil(self.db).alertas_nuevas, 1)
+        self.assertEqual(run_vigil(self.db, detectors=[MarginDetector()]).alertas_nuevas, 1)
         self.assertEqual(len({a.dedupe_key for a in self.detected_alerts()}), 2)
 
     async def test_manual_endpoint_roles(self):
         self.fixture()
-        for role in [Role.LIDER_PROCESO, Role.AUDITOR]:
-            self.assertEqual((await self.request(role))[0], 403)
-        for role in [Role.GERENTE, Role.ANALISTA]:
-            code, body = await self.request(role)
-            self.assertEqual(code, 200)
-            self.assertEqual(body["detectores_ejecutados"], 1)
+        with patch("app.vigil.service.DETECTORS", (MarginDetector(),)):
+            for role in [Role.LIDER_PROCESO, Role.AUDITOR]:
+                self.assertEqual((await self.request(role))[0], 403)
+            for role in [Role.GERENTE, Role.ANALISTA]:
+                code, body = await self.request(role)
+                self.assertEqual(code, 200)
+                self.assertEqual(body["detectores_ejecutados"], 1)
 
     async def test_failure_is_controlled_logged_and_next_detector_runs(self):
         class Broken:
@@ -192,7 +193,7 @@ class MarginTests(unittest.IsolatedAsyncioTestCase):
             return real_flush(*args, **kwargs)
 
         with patch.object(self.db, "flush", side_effect=flush), self.assertLogs("app.vigil.service", level="ERROR"):
-            result = run_vigil(self.db)
+            result = run_vigil(self.db, detectors=[MarginDetector()])
         self.assertEqual(result.alertas_nuevas, 0)
         self.assertEqual(self.detected_alerts(), [])
 

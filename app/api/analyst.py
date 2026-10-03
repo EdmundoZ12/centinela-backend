@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import CurrentUser
-from app.analyst.service import analyze_margin_alert
+from app.analyst.service import analyze_alert as analyze_alert_service
 from app.db.session import get_db
 from app.models.core import AlertStatus, Role
 
@@ -30,4 +30,4 @@ class AnalysisResponse(BaseModel):
 def analyze_alert(id: UUID, db: Annotated[Session, Depends(get_db)], user: CurrentUser):
     if user.role not in (Role.GERENTE, Role.ANALISTA):
         raise HTTPException(status_code=403, detail="No tienes permiso para analizar alertas.")
-    return analyze_margin_alert(db, id, user.id)
+    return analyze_alert_service(db, id, user.id)

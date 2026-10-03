@@ -72,3 +72,9 @@ MARGIN_POLICY_QUERY = (
     "Aumento de costos de productos, revisión del precio de venta ante cambios de costo, "
     "margen mínimo por línea y política de inventario y precios."
 )
+
+DISCOUNT_POLICY_QUERY = (
+    "Topes normales y especiales de descuento por segmento, aprobación especial, "
+    "reincidencia durante dos semanas consecutivas, autorización para cotizar, "
+    "venta debajo del costo y fraccionamiento de pedidos."
+)
